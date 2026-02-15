@@ -1,11 +1,17 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import api from "@/lib/api";
+
+export interface ToolCallInfo {
+  tool: string;
+  arguments: Record<string, unknown>;
+  result: unknown;
+}
 
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  sources?: { chunk_text: string; similarity: number }[];
+  toolCalls?: ToolCallInfo[];
   timestamp: Date;
 }
 
@@ -18,69 +24,63 @@ function nextId(): string {
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const conversationIdRef = useRef<string | null>(null);
 
-  const sendMessage = useCallback(async (question: string) => {
-    const userMsg: ChatMessage = {
-      id: nextId(),
-      role: "user",
-      content: question,
-      timestamp: new Date(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
-    setIsLoading(true);
-
-    try {
-      const { data } = await api.post("/v1/rag/query", {
-        question,
-        top_k: 5,
-      });
-
-      // Build assistant response from RAG results
-      const chunks = data.results as {
-        chunk_text: string;
-        similarity: number;
-      }[];
-
-      let answer: string;
-      if (chunks.length === 0) {
-        answer =
-          "I couldn't find any relevant information in the knowledge base. Please try rephrasing your question or contact HR directly.";
-      } else {
-        answer =
-          "Based on the company policies, here's what I found:\n\n" +
-          chunks
-            .slice(0, 3)
-            .map(
-              (c, i) =>
-                `**Source ${i + 1}** (${(c.similarity * 100).toFixed(0)}% match):\n${c.chunk_text}`
-            )
-            .join("\n\n");
-      }
-
-      const assistantMsg: ChatMessage = {
-        id: nextId(),
-        role: "assistant",
-        content: answer,
-        sources: chunks,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch {
-      const errorMsg: ChatMessage = {
-        id: nextId(),
-        role: "assistant",
-        content:
-          "Sorry, I encountered an error processing your question. Please try again.",
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
-    } finally {
-      setIsLoading(false);
+  const ensureConversation = useCallback(async (): Promise<string> => {
+    if (conversationIdRef.current) {
+      return conversationIdRef.current;
     }
+    const { data } = await api.post("/v1/chat/conversations");
+    conversationIdRef.current = data.id;
+    return data.id;
   }, []);
+
+  const sendMessage = useCallback(
+    async (content: string) => {
+      const userMsg: ChatMessage = {
+        id: nextId(),
+        role: "user",
+        content,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      setIsLoading(true);
+
+      try {
+        const conversationId = await ensureConversation();
+
+        const { data } = await api.post("/v1/chat/message", {
+          conversation_id: conversationId,
+          content,
+        });
+
+        const assistantMsg: ChatMessage = {
+          id: nextId(),
+          role: "assistant",
+          content: data.response,
+          toolCalls: data.tool_calls ?? undefined,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      } catch {
+        const errorMsg: ChatMessage = {
+          id: nextId(),
+          role: "assistant",
+          content:
+            "Sorry, I encountered an error processing your question. Please try again.",
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMsg]);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [ensureConversation],
+  );
 
   const clearMessages = useCallback(() => {
     setMessages([]);
+    conversationIdRef.current = null;
   }, []);
 
   return { messages, isLoading, sendMessage, clearMessages };

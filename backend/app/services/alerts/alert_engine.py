@@ -34,7 +34,7 @@ async def _send_message(
     Falls back to logging if the channel router is not available (parallel task).
     """
     try:
-        from app.services.channels.channel_router import route_message
+        from app.services.channels.router import route_message
         await route_message(
             employee_id=employee.id,
             organization_id=employee.organization_id,

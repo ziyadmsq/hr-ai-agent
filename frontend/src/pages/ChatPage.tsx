@@ -13,7 +13,7 @@ export default function ChatPage() {
         <div>
           <h2 className="text-lg font-semibold">HR Assistant</h2>
           <p className="text-xs text-muted-foreground">
-            Powered by RAG — answers based on your company policies
+            AI-powered assistant — answers questions, checks leave, and generates documents
           </p>
         </div>
         {messages.length > 0 && (

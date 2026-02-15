@@ -27,7 +27,7 @@ export default function ChatMessageList({
           <h3 className="text-lg font-semibold">HR Assistant</h3>
           <p className="text-sm text-muted-foreground max-w-sm">
             Ask me anything about company policies, leave balances, or HR
-            procedures. I'll search the knowledge base to find answers.
+            procedures. I can search policies, check leave, and generate documents.
           </p>
         </div>
       </div>
@@ -57,6 +57,16 @@ export default function ChatMessageList({
               }`}
             >
               {msg.content}
+              {msg.toolCalls && msg.toolCalls.length > 0 && (
+                <div className="mt-2 border-t pt-2 text-xs text-muted-foreground">
+                  <span className="font-medium">Actions taken:</span>
+                  {msg.toolCalls.map((tc, i) => (
+                    <div key={i} className="ml-2">
+                      • {tc.tool}({Object.keys(tc.arguments).join(", ")})
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             {msg.role === "user" && (
               <Avatar className="h-8 w-8 shrink-0">
@@ -75,7 +85,7 @@ export default function ChatMessageList({
               </AvatarFallback>
             </Avatar>
             <div className="rounded-lg px-4 py-2 bg-muted text-sm">
-              <span className="animate-pulse">Searching knowledge base…</span>
+              <span className="animate-pulse">Thinking…</span>
             </div>
           </div>
         )}

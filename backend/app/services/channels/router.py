@@ -162,3 +162,56 @@ async def handle_email_message(
     )
     return reply
 
+
+async def route_message(
+    employee_id: UUID,
+    organization_id: UUID,
+    message: str,
+    channel: str = "web",
+) -> None:
+    """Route a proactive message to an employee via the specified channel.
+
+    Used by the alert engine to send proactive notifications.
+    Falls back to logging if the channel service is not configured.
+    """
+    from app.core.database import async_session_factory
+
+    async with async_session_factory() as db:
+        employee = (
+            await db.execute(
+                select(Employee).where(
+                    Employee.id == employee_id,
+                    Employee.organization_id == organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if not employee:
+            logger.warning(
+                "route_message: employee %s not found in org %s",
+                employee_id,
+                organization_id,
+            )
+            return
+
+        if channel == "whatsapp":
+            phone = (employee.metadata_ or {}).get("phone")
+            if phone:
+                await whatsapp_service.send_message(phone, message)
+            else:
+                logger.warning("No phone number for employee %s", employee_id)
+        elif channel == "email":
+            await email_service.send_email(
+                to=employee.email,
+                subject="HR Assistant Notification",
+                body_text=message,
+            )
+        else:
+            # "web" or unknown — log only (web push not implemented)
+            logger.info(
+                "[route_message] channel=%s employee=%s msg=%s",
+                channel,
+                employee.full_name,
+                message[:200],
+            )
+
