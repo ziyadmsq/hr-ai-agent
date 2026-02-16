@@ -64,11 +64,11 @@ class VectorRetriever:
                 chunk_text,
                 chunk_index,
                 metadata,
-                1 - (embedding <=> :embedding::vector) AS similarity
+                1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
             FROM policy_chunks
             WHERE organization_id = :org_id
               AND embedding IS NOT NULL
-            ORDER BY embedding <=> :embedding::vector
+            ORDER BY embedding <=> CAST(:embedding AS vector)
             LIMIT :limit
             """
         )
