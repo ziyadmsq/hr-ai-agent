@@ -54,7 +54,7 @@ class HRAgent:
         self._client = None
         self._model = "gpt-4o"
 
-        if settings.OPENAI_API_KEY:
+        if settings.OPENAI_API_KEY and not settings.OPENAI_API_KEY.startswith("sk-placeholder"):
             try:
                 from openai import AsyncOpenAI
                 self._client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
@@ -288,10 +288,14 @@ class HRAgent:
             {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(org_name=org_name)}
         ]
         for msg in history:
-            entry: dict[str, Any] = {"role": msg.role, "content": msg.content}
-            if msg.tool_calls:
-                entry["tool_calls"] = msg.tool_calls
-            messages.append(entry)
+            # Only include user and assistant text messages.
+            # Stored tool_calls are in summary format (for frontend display)
+            # and are NOT compatible with the OpenAI API message format.
+            # Tool call execution happens within a single turn (in-memory loop)
+            # so we never need to replay them from DB.
+            if msg.role in ("user", "assistant"):
+                entry: dict[str, Any] = {"role": msg.role, "content": msg.content or ""}
+                messages.append(entry)
         return messages
 
     @staticmethod

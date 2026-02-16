@@ -24,6 +24,7 @@ from app.core.security import (
     require_role,
     verify_password,
 )
+from app.models.employee import Employee
 from app.models.organization import Organization
 from app.models.user import User
 
@@ -58,6 +59,19 @@ async def register_org(body: RegisterOrgRequest, db: AsyncSession = Depends(get_
     db.add(org)
     await db.flush()  # get org.id
 
+    # Create corresponding employee record so chat works
+    employee = Employee(
+        organization_id=org.id,
+        employee_code=f"ADMIN-{uuid.uuid4().hex[:6].upper()}",
+        full_name=body.admin_name,
+        email=body.admin_email,
+        department="Management",
+        position="Administrator",
+        status="active",
+    )
+    db.add(employee)
+    await db.flush()
+
     # Create admin user
     user = User(
         organization_id=org.id,
@@ -65,6 +79,7 @@ async def register_org(body: RegisterOrgRequest, db: AsyncSession = Depends(get_
         hashed_password=hash_password(body.password),
         role="admin",
         full_name=body.admin_name,
+        employee_id=employee.id,
     )
     db.add(user)
     await db.flush()
@@ -132,12 +147,26 @@ async def join_org(body: JoinOrgRequest, db: AsyncSession = Depends(get_db)):
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Email already registered")
 
+    # Create corresponding employee record so chat works
+    employee = Employee(
+        organization_id=uuid.UUID(invite["org_id"]),
+        employee_code=f"EMP-{uuid.uuid4().hex[:6].upper()}",
+        full_name=invite["full_name"],
+        email=invite["email"],
+        department=None,
+        position=None,
+        status="active",
+    )
+    db.add(employee)
+    await db.flush()
+
     user = User(
         organization_id=uuid.UUID(invite["org_id"]),
         email=invite["email"],
         hashed_password=hash_password(body.password),
         role=invite["role"],
         full_name=invite["full_name"],
+        employee_id=employee.id,
     )
     db.add(user)
     await db.flush()
