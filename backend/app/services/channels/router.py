@@ -13,14 +13,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.employee import Employee
 from app.models.organization import Organization
-from app.services.agent.hr_agent import HRAgent
+from app.services.agent.conversation_manager import ConversationManager
+from app.services.agent.hr_agent import HRAgent, _normalize_ai_config
+from app.services.agent.provider_factory import get_default_ai_config
 from app.services.channels.email import email_service
 from app.services.channels.whatsapp import whatsapp_service
 
 logger = logging.getLogger(__name__)
 
-# Shared agent instance (same as chat.py uses)
-_agent = HRAgent()
+# Shared ConversationManager (stateless — safe to reuse)
+_conversation_manager = ConversationManager()
+
+
+async def _create_agent(db: AsyncSession, org_id: UUID) -> HRAgent:
+    """Create an HRAgent per-request using the org's AI config."""
+    result = await db.execute(
+        select(Organization).where(Organization.id == org_id)
+    )
+    org = result.scalar_one_or_none()
+    if org and org.settings:
+        raw_config = org.settings.get("ai_config", {})
+    else:
+        raw_config = {}
+
+    ai_config = _normalize_ai_config(raw_config) if raw_config else get_default_ai_config()
+    return HRAgent(ai_config=ai_config)
 
 
 async def _lookup_employee_by_phone(
@@ -82,7 +99,7 @@ async def _get_or_create_conversation(
     if conv:
         return conv
 
-    return await _agent.conversation_manager.create_conversation(
+    return await _conversation_manager.create_conversation(
         db, organization_id, employee_id, channel=channel
     )
 
@@ -104,7 +121,8 @@ async def handle_whatsapp_message(
     )
     org_name = await _get_org_name(db, employee.organization_id)
 
-    result = await _agent.chat(
+    agent = await _create_agent(db, employee.organization_id)
+    result = await agent.chat(
         db=db,
         conversation_id=conv.id,
         user_message=message_body,
@@ -143,7 +161,8 @@ async def handle_email_message(
     # Use subject + body as the message content
     full_message = f"[Subject: {subject}]\n{body}" if subject else body
 
-    result = await _agent.chat(
+    agent = await _create_agent(db, employee.organization_id)
+    result = await agent.chat(
         db=db,
         conversation_id=conv.id,
         user_message=full_message,

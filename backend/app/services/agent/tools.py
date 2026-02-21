@@ -1,14 +1,18 @@
-"""Agent tool definitions and execution for OpenAI function calling.
+"""Agent tool definitions for LangChain and legacy OpenAI function calling.
 
 Each tool maps to an existing HR service or RAG pipeline operation.
+Tools are available in two formats:
+  - LangChain @tool functions via get_langchain_tools()
+  - Legacy OpenAI format via TOOL_DEFINITIONS + execute_tool() (backward compat)
 """
 
 import json
 import logging
 from datetime import date
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
+from langchain_core.tools import tool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +25,7 @@ from app.services.rag.pipeline import RAGPipeline
 
 logger = logging.getLogger(__name__)
 
-# ── OpenAI function/tool definitions ─────────────────────────────────────────
+# ── Legacy OpenAI function/tool definitions (backward compat) ────────────────
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
@@ -292,7 +296,7 @@ async def _get_policy_details(
     }
 
 
-# Handler registry
+# Handler registry (used by legacy execute_tool)
 _TOOL_HANDLERS = {
     "check_leave_balance": _check_leave_balance,
     "submit_leave_request": _submit_leave_request,
@@ -301,3 +305,118 @@ _TOOL_HANDLERS = {
     "generate_document": _generate_document,
     "get_policy_details": _get_policy_details,
 }
+
+
+# ── LangChain tool factory ──────────────────────────────────────────────────
+
+
+def get_langchain_tools(
+    db: AsyncSession,
+    employee_id: UUID,
+    organization_id: UUID,
+) -> list:
+    """Create LangChain tools with injected DB session and tenant context.
+
+    Each returned tool is a LangChain ``BaseTool`` instance that the LangGraph
+    agent can invoke directly.  The ``db``, ``employee_id``, and
+    ``organization_id`` values are captured via closure so the LLM never sees
+    them as parameters.
+    """
+
+    @tool
+    async def check_leave_balance(
+        leave_type: Optional[str] = None,
+    ) -> str:
+        """Check an employee's leave balance. Returns remaining days for each leave type.
+
+        Args:
+            leave_type: Optional leave type filter (annual, sick, maternity, paternity, unpaid). If omitted, returns all types.
+        """
+        result = await _check_leave_balance(
+            {"leave_type": leave_type} if leave_type else {},
+            db, employee_id, organization_id,
+        )
+        return json.dumps(result, default=str)
+
+    @tool
+    async def submit_leave_request(
+        leave_type: str,
+        start_date: str,
+        end_date: str,
+        reason: Optional[str] = None,
+    ) -> str:
+        """Submit a leave request on behalf of the employee.
+
+        Args:
+            leave_type: Type of leave (annual, sick, maternity, paternity, unpaid).
+            start_date: Start date in YYYY-MM-DD format.
+            end_date: End date in YYYY-MM-DD format.
+            reason: Reason for the leave request.
+        """
+        result = await _submit_leave_request(
+            {
+                "leave_type": leave_type,
+                "start_date": start_date,
+                "end_date": end_date,
+                "reason": reason,
+            },
+            db, employee_id, organization_id,
+        )
+        return json.dumps(result, default=str)
+
+    @tool
+    async def get_employee_info() -> str:
+        """Get the current employee's profile information (name, department, position, hire date, etc.)."""
+        result = await _get_employee_info(
+            {}, db, employee_id, organization_id,
+        )
+        return json.dumps(result, default=str)
+
+    @tool
+    async def search_policies(query: str) -> str:
+        """Search the organization's HR policy documents using semantic search.
+
+        Use this to answer questions about company policies, benefits, rules, and procedures.
+
+        Args:
+            query: The search query describing what policy information is needed.
+        """
+        result = await _search_policies(
+            {"query": query}, db, employee_id, organization_id,
+        )
+        return json.dumps(result, default=str)
+
+    @tool
+    async def generate_document(document_type: str) -> str:
+        """Generate an HR document for the employee.
+
+        Supported types: contract, resignation_letter, experience_letter, salary_certificate, noc.
+
+        Args:
+            document_type: Type of document to generate.
+        """
+        result = await _generate_document(
+            {"document_type": document_type}, db, employee_id, organization_id,
+        )
+        return json.dumps(result, default=str)
+
+    @tool
+    async def get_policy_details(policy_id: str) -> str:
+        """Get the full text of a specific policy document by its ID.
+
+        Args:
+            policy_id: The UUID of the policy document.
+        """
+        result = await _get_policy_details(
+            {"policy_id": policy_id}, db, employee_id, organization_id,
+        )
+        return json.dumps(result, default=str)
+
+    return [
+        check_leave_balance,
+        submit_leave_request,
+        get_employee_info,
+        search_policies,
+        generate_document,
+        get_policy_details,
+    ]

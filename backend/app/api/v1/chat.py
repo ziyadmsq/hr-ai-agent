@@ -8,21 +8,21 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.dependencies import get_current_user, get_current_tenant, get_db
 from app.core.security import decode_access_token
+from app.models.organization import Organization
 from app.models.user import User
-from app.services.agent.hr_agent import HRAgent
+from app.services.agent.hr_agent import HRAgent, _normalize_ai_config
+from app.services.agent.provider_factory import get_default_ai_config
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-# Singleton agent instance
-_agent = HRAgent()
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -69,6 +69,11 @@ class ChatResponse(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Shared ConversationManager instance (stateless — safe to reuse)
+from app.services.agent.conversation_manager import ConversationManager
+
+_conversation_manager = ConversationManager()
+
 
 def _get_employee_id(user: User) -> UUID:
     if not user.employee_id:
@@ -79,13 +84,27 @@ def _get_employee_id(user: User) -> UUID:
     return user.employee_id
 
 
-async def _get_org_name(db: AsyncSession, org_id: UUID) -> str:
-    from app.models.organization import Organization
-    from sqlalchemy import select
-
+async def _get_org(db: AsyncSession, org_id: UUID) -> Organization | None:
+    """Load the organization from DB."""
     result = await db.execute(select(Organization).where(Organization.id == org_id))
-    org = result.scalar_one_or_none()
+    return result.scalar_one_or_none()
+
+
+async def _get_org_name(db: AsyncSession, org_id: UUID) -> str:
+    org = await _get_org(db, org_id)
     return org.name if org else "Your Organization"
+
+
+async def _create_agent(db: AsyncSession, org_id: UUID) -> HRAgent:
+    """Create an HRAgent per-request using the org's AI config."""
+    org = await _get_org(db, org_id)
+    if org and org.settings:
+        raw_config = org.settings.get("ai_config", {})
+    else:
+        raw_config = {}
+
+    ai_config = _normalize_ai_config(raw_config) if raw_config else get_default_ai_config()
+    return HRAgent(ai_config=ai_config)
 
 
 # ── REST Endpoints ────────────────────────────────────────────────────────────
@@ -99,7 +118,7 @@ async def create_conversation(
 ):
     """Start a new conversation."""
     emp_id = _get_employee_id(current_user)
-    conv = await _agent.conversation_manager.create_conversation(
+    conv = await _conversation_manager.create_conversation(
         db, org_id, emp_id, channel="web"
     )
     return ConversationResponse(
@@ -119,7 +138,7 @@ async def list_conversations(
 ):
     """List the current user's conversations."""
     emp_id = _get_employee_id(current_user)
-    convs = await _agent.conversation_manager.list_conversations(db, org_id, emp_id)
+    convs = await _conversation_manager.list_conversations(db, org_id, emp_id)
     items = [
         ConversationResponse(
             id=str(c.id),
@@ -142,7 +161,7 @@ async def get_conversation(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a conversation with all its messages."""
-    conv = await _agent.conversation_manager.get_conversation(db, conversation_id, org_id)
+    conv = await _conversation_manager.get_conversation(db, conversation_id, org_id)
     if conv is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
@@ -185,7 +204,7 @@ async def send_message(
     conversation_id = UUID(data.conversation_id)
 
     # Verify conversation exists and belongs to user
-    conv = await _agent.conversation_manager.get_conversation(db, conversation_id, org_id)
+    conv = await _conversation_manager.get_conversation(db, conversation_id, org_id)
     if conv is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     if conv.employee_id != emp_id:
@@ -193,8 +212,10 @@ async def send_message(
     if conv.status != "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Conversation is closed")
 
+    # Create agent per-request with org's AI config
+    agent = await _create_agent(db, org_id)
     org_name = await _get_org_name(db, org_id)
-    result = await _agent.chat(
+    result = await agent.chat(
         db=db,
         conversation_id=conversation_id,
         user_message=data.content,
@@ -247,7 +268,6 @@ async def websocket_chat(websocket: WebSocket):
 
         # Get user from DB
         async with async_session_factory() as db:
-            from sqlalchemy import select
             result = await db.execute(
                 select(User).where(User.id == UUID(user_id))
             )
@@ -284,12 +304,14 @@ async def websocket_chat(websocket: WebSocket):
             async with async_session_factory() as db:
                 try:
                     conv_uuid = UUID(conversation_id)
-                    conv = await _agent.conversation_manager.get_conversation(db, conv_uuid, org_id)
+                    conv = await _conversation_manager.get_conversation(db, conv_uuid, org_id)
                     if not conv or conv.employee_id != employee_id:
                         await websocket.send_json({"type": "error", "message": "Conversation not found"})
                         continue
 
-                    async for event in _agent.chat_stream(
+                    # Create agent per-request with org's AI config
+                    agent = await _create_agent(db, org_id)
+                    async for event in agent.chat_stream(
                         db=db,
                         conversation_id=conv_uuid,
                         user_message=content,

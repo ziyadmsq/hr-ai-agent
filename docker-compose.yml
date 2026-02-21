@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://hr_saas:hr_saas_dev@db:5432/hr_saas
       JWT_SECRET: dev-secret-change-in-production
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy
