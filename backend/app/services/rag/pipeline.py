@@ -4,6 +4,7 @@ Orchestrates the chunker, embedding service, and vector retriever.
 """
 
 import logging
+from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -21,8 +22,8 @@ logger = logging.getLogger(__name__)
 class RAGPipeline:
     """High-level RAG operations: ingest, query, re-index."""
 
-    def __init__(self):
-        self.embedding_service = EmbeddingService()
+    def __init__(self, ai_config: Optional[dict[str, Any]] = None):
+        self.embedding_service = EmbeddingService(ai_config=ai_config)
         self.chunker = DocumentChunker()
         self.retriever = VectorRetriever()
 
